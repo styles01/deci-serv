@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deciserv"
+version = "0.1.0"
+description = "A PyTorch server for System-1 decision models — local serving of calibrated decision gates"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "James A" }]
+keywords = ["decision-models", "system-1", "guardrails", "agent-gates", "pytorch", "calibration"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Programming Language :: Python :: 3",
+]
+dependencies = ["torch>=2.1"]
+
+[project.optional-dependencies]
+laya = ["transformers>=4.48"]
+dev = ["pytest>=8"]
+
+[project.scripts]
+deciserv = "deciserv.server:main"
+
+[tool.setuptools.packages.find]
+include = ["deciserv*"]
