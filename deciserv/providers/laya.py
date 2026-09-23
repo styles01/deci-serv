@@ -29,9 +29,15 @@ class LayaProvider(Provider):
         self._t0 = time.time()
         import torch  # noqa: F401 — imported here so server starts clean without CUDA
         self.ckpt = os.path.abspath(self.checkpoint)
-        sys.path.insert(0, self.ckpt)
-        os.environ.setdefault("HF_HOME", os.environ.get("HF_HOME", self.ckpt))
-        from rl_agent_api import RLAgent  # ships inside the laya checkpoint dir
+        # rl_agent_api.py ships in the laya REPO ROOT (parent of the checkpoint
+        # subdir, e.g. typed-decisions/). Add both the ckpt dir and its parent.
+        repo_root = os.path.dirname(self.ckpt) if os.path.basename(self.ckpt) != "laya" else self.ckpt
+        for p in (self.ckpt, repo_root, os.path.dirname(repo_root)):
+            if os.path.exists(os.path.join(p, "rl_agent_api.py")):
+                sys.path.insert(0, p)
+                break
+        os.environ.setdefault("HF_HOME", os.environ.get("HF_HOME", os.path.dirname(repo_root)))
+        from rl_agent_api import RLAgent  # ships inside the laya repo dir
         self.agent = RLAgent(self.ckpt, device=self.device)
         if self.precision in ("fp16", "bf16"):
             dtype = torch.float16 if self.precision == "fp16" else torch.bfloat16
