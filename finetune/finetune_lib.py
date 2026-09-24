@@ -229,6 +229,11 @@ def build_examples(rows: list[dict], questions: dict | None = None,
     pack_q = pack_questions(load_packs()) if default_question is None else {}
     examples = []
     for row in rows:
+        # passthrough: rows already in canonical build_example shape (e.g. from
+        # tev1_to_deciserv.py) skip re-derivation entirely
+        if "input" in row and "target" in row and "state_hash" in row:
+            examples.append(row)
+            continue
         cls = row.get("class")
         if cls is not None:                                   # synthetic corpus row
             state = row["state"]
