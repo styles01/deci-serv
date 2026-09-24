@@ -76,8 +76,7 @@ def plan(args) -> dict:
         steps = min(steps, args.max_steps)
     return {"rows": counts, "batch": bs, "steps": steps,
             "lora": {"r": args.lora_r, "alpha": args.lora_alpha,
-                     "targets": ["q_proj", "k_proj", "v_proj", "o_proj",
-                                 "up_proj", "down_proj"]},
+                     "targets": ["Wqkv", "Wo", "Wi"]},
             "optimizer": {"lr": args.lr, "warmup_frac": args.warmup,
                           "schedule": "cosine"},
             "precision": "bf16-autocast (train) / fp32 (val probability checks)",
