@@ -24,7 +24,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
+import random
 import sys
 
 
@@ -104,18 +106,123 @@ def main(argv=None) -> int:
     from finetune_lib import read_jsonl
     train = read_jsonl(os.path.join(args.data, "train.jsonl"))
     val = read_jsonl(os.path.join(args.data, "val.jsonl"))
-    print(f"[gpu] loading {args.base}:{args.ckpt} ...")
-    tok = AutoTokenizer.from_pretrained(args.base, subfolder=args.ckpt)
-    model = AutoModel.from_pretrained(args.base, subfolder=args.ckpt, torch_dtype="auto")
+    # The checkpoint dir (typed-decisions/) is INSIDE the laya repo bundle that
+    # ships rl_agent_api.py + rl_common.py — import them from there.
+    ckpt_dir = os.path.abspath(args.ckpt_full or args.base)
+    if os.path.isdir(args.base):
+        repo_root = os.path.dirname(os.path.abspath(args.base)) if os.path.basename(args.base) != "laya" else os.path.abspath(args.base)
+        ckpt_dir = os.path.abspath(args.base)
+    else:
+        raise SystemExit("--base must be a LOCAL checkpoint dir on this host (HF hub path not supported for the GPU loop)")
+    sys.path.insert(0, repo_root)
+    from rl_agent_api import RLAgent  # noqa: E402
+    from rl_common import QTYPES, build_sequence, collate_items, render_options, temp_bucket  # noqa: E402
+    import torch
+    agent = RLAgent(ckpt_dir, device="cuda")
+    model = agent.model
+    # LoRA on the encoder only; the head trains jointly (it is the calibration
+    # surface, freezing it would fight the encoder). Head LR = 10x LoRA LR.
+    from peft import LoraConfig, get_peft_model
     lcfg = LoraConfig(r=args.lora_r, lora_alpha=args.lora_alpha,
-                      target_modules=p["lora"]["targets"], lora_dropout=0.05,
-                      task_type="CAUSAL_LM")
-    model = get_peft_model(model, lcfg)
+                      target_modules=list(p["lora"]["targets"]), lora_dropout=0.05)
+    model.encoder = get_peft_model(model.encoder, lcfg)
     model.print_trainable_parameters()
-    # Training loop: standard HF Trainer-free loop (small data, full control,
-    # separation eval hook — see finetune_lib.separation_metric).
-    raise SystemExit("[gpu] training loop lands with the lane-idle window; "
-                     "dataset + plan verified GPU-free")  # placeholder by design
+    enc_params = [pp for pp in model.encoder.parameters() if pp.requires_grad]
+    head_params = [pp for n, pp in model.named_parameters() if "encoder." not in n and pp.requires_grad]
+    opt = torch.optim.AdamW([
+        {"params": enc_params, "lr": args.lr},
+        {"params": head_params, "lr": args.lr * 10.0},  # head from scratch-ish vs frozen-ish encoder
+    ], weight_decay=0.01)
+    steps_total = p["steps"] or 1
+    sched = torch.optim.lr_scheduler.LambdaLR(
+        opt, lambda s: min(1.0, (s + 1) / max(1, int(steps_total * args.warmup))) *
+        (0.5 * (1 + math.cos(math.pi * min(1.0, s / steps_total)))))
+    amp_dtype = agent.dtype
+    pad_id = agent.tok.pad_token_id
+    QTYPE_ID = {v: i for i, v in QTYPES.items()}
+    from finetune_lib import separation_metric, split_examples_by_class  # noqa: E402
+
+    def encode_batch(rows):
+        items, labels = [], []
+        for ex in rows:
+            q = ex["input"]["question"]
+            qdef = {"type": q["type"], "instructions": q["instructions"],
+                    "criteria": q.get("criteria")}
+            qi = RLAgent._to_internal(qdef)
+            seq, markers = build_sequence(agent.tok, ex["input"]["state"], qi,
+                                          agent.cfg["max_len"], agent.cfg["head_max_len"])
+            items.append({"ids": seq, "markers": markers, "qtype": QTYPES[q["type"]],
+                          "target": ex["target"]["probabilities"], "label": ex["target"]["label"],
+                          "episode": 0, "ep_step": 0, "ep_len": 1, "src": "ft"})
+            labels.append(ex["target"]["probabilities"])
+        b = collate_items([items], pad_id)
+        return b, torch.tensor(labels, dtype=torch.float32)
+
+    @torch.no_grad()
+    def eval_separation():
+        agent.model.eval()
+        probs = []
+        for i in range(0, len(val), 16):
+            b, _ = encode_batch(val[i:i + 16])
+            with torch.autocast(device_type="cuda", dtype=amp_dtype):
+                logits, _ = agent.model(b["input_ids"].cuda(), b["attention_mask"].cuda(),
+                                        b["marker_pos"].cuda(), b["marker_mask"].cuda(),
+                                        b["qtype"].cuda())
+            for r in range(logits.size(0)):
+                z = logits[r].float().cpu().numpy()
+                pz = np.exp(z - z.max()); pz /= pz.sum()
+                probs.append(pz)
+        agent.model.train()
+        # block-index per example: the question is the gate 'block' choice set
+        by = {"destructive": [], "benign": []}
+        for ex, pz in zip(val, probs):
+            if ex.get("class") in by:
+                # block option = the one whose side prefix is 'block'
+                opts = ex["input"]["question"].get("options") or []
+                idx = next((i for i, o in enumerate(opts) if o.split(":", 1)[0].strip() == "block"), 0)
+                by[ex["class"]].append(pz[idx])
+        if not by["destructive"] or not by["benign"]:
+            return None
+        return separation_metric(by["destructive"], by["benign"])
+
+    import numpy as np
+    rng = random.Random(1337)
+    order = list(range(len(train)))
+    step = 0
+    agent.model.train()
+    bs = p["batch"]
+    print(f"[gpu] training {steps_total} steps, batch {bs}, eval every {args.eval_every}")
+    while step < steps_total:
+        rng.shuffle(order)
+        for i in range(0, len(order) - bs + 1, bs):
+            batch_rows = [train[j] for j in order[i:i + bs]]
+            b, targets = encode_batch(batch_rows)
+            with torch.autocast(device_type="cuda", dtype=amp_dtype):
+                logits, _ = agent.model(b["input_ids"].cuda(), b["attention_mask"].cuda(),
+                                        b["marker_pos"].cuda(), b["marker_mask"].cuda(),
+                                        b["qtype"].cuda())
+            k = logits.size(1)
+            logp = torch.log_softmax(logits.float(), dim=1)
+            loss = -(targets.cuda() * logp).sum(1).mean()  # soft-target CE (proper scoring)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(enc_params + head_params, 1.0)
+            opt.step(); opt.zero_grad()
+            step += 1
+            if step % 10 == 0:
+                print(f"  step {step}/{steps_total} loss {loss.item():.4f}", flush=True)
+            if step % args.eval_every == 0 or step == steps_total:
+                m = eval_separation()
+                print(f"  [eval] step {step}: {m}", flush=True)
+            if step >= steps_total:
+                break
+    os.makedirs(args.out, exist_ok=True)
+    merged = model.merge_and_unload() if hasattr(model, "merge_and_unload") else None
+    torch.save({"state": (merged or agent.model).state_dict(), "cfg": agent.cfg},
+               os.path.join(args.out, "laya-gate-lora.pt"))
+    with open(os.path.join(args.out, "train_report.json"), "w") as f:
+        json.dump({"final_separation": eval_separation(), "steps": step,
+                   "rows": p["rows"], "lora": p["lora"]}, f, indent=1)
+    print(f"[gpu] saved adapter bundle to {args.out}")
 
 
 if __name__ == "__main__":
