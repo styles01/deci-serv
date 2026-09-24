@@ -28,9 +28,16 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .providers import get_provider
+from .providers.base import Provider
+from . import policy as _policy
 
 _stats = {"calls": 0, "lat_ms_sum": 0.0, "lat_max": 0.0, "err": 0}
 _stats_lock = threading.Lock()
+
+# Policy-layer metrics (hybrid gate): fast-path hits skip the model; model_calls
+# counts /decide requests that reached the provider. floor_hits tracks layer-2.
+_gate_stats = {"fast_path_hits": 0, "model_calls": 0, "floor_hits": 0,
+               "policy_verdicts": {"pass": 0, "escalate": 0, "block": 0}}
 
 # Stratified metrics: per question-type x decision-class bins (R3 /metrics v2)
 _strat = {}  # {question_name: {"n": int, "lat_ms_sum": float, "conf_sum": float}}
@@ -56,7 +63,7 @@ def _state_hash(state) -> str:
 
 
 class DeciHandler(BaseHTTPRequestHandler):
-    provider = None  # class attr set at startup
+    provider: "Provider | None" = None  # class attr set at startup
 
     def log_message(self, *a):
         pass
@@ -78,7 +85,12 @@ class DeciHandler(BaseHTTPRequestHandler):
                 m = {"calls": _stats["calls"],
                      "p_avg_ms": round(_stats["lat_ms_sum"] / n, 1),
                      "p_max_ms": round(_stats["lat_max"], 1),
-                     "errors": _stats["err"]}
+                     "errors": _stats["err"],
+                     "policy_mode": _policy.POLICY_MODE,
+                     "fast_path_hits": _gate_stats["fast_path_hits"],
+                     "model_calls": _gate_stats["model_calls"],
+                     "floor_hits": _gate_stats["floor_hits"],
+                     "policy_verdicts": dict(_gate_stats["policy_verdicts"])}
             with _strat_lock:
                 m["by_question"] = {q: {"n": d["n"],
                                         "avg_ms": round(d["lat_ms_sum"] / max(d["n"], 1), 1),
@@ -89,6 +101,8 @@ class DeciHandler(BaseHTTPRequestHandler):
         elif self.path == "/metrics/reset":
             with _stats_lock:
                 _stats.update({"calls": 0, "lat_ms_sum": 0.0, "lat_max": 0.0, "err": 0})
+                _gate_stats.update({"fast_path_hits": 0, "model_calls": 0, "floor_hits": 0,
+                                    "policy_verdicts": {"pass": 0, "escalate": 0, "block": 0}})
             with _strat_lock:
                 _strat.clear()
             self._send(200, {"status": "reset", "log_preserved": bool(_LOG)})
@@ -105,9 +119,112 @@ class DeciHandler(BaseHTTPRequestHandler):
             n = int(self.headers.get("Content-Length", 0))
             req = json.loads(self.rfile.read(n))
             t0 = time.time()
-            res = self.provider.decide(req["state"], req.get("questions", {}))
+            state = req["state"]
+            questions = req.get("questions", {})
+            req_policy = req.get("policy", "safety")
+
+            def call_model(state_text, merged_questions):
+                """Provider call for the gate's layer 3. Returns answers dict,
+                or None on ANY model/server error (fail-closed discipline is
+                decided by the policy layer, not here)."""
+                try:
+                    return self.provider.decide(state_text, merged_questions)
+                except Exception:  # noqa: BLE001 — gate must answer, not crash
+                    return None
+
+            # ---- 3-layer hybrid gate (default) --------------------------------
+            if _policy.POLICY_MODE not in ("model-only",):
+                gate = _policy.evaluate(state, questions, call_model=call_model)
+                layer = gate["layer"]
+                final_risk = round(float(gate.get("final_risk") or 0.0), 4)
+                # Contract map (arbiter semantics onto our typed verdicts):
+                # allow→pass, ask→escalate, deny→block.
+                verdict = {"allow": "pass", "ask": "escalate", "deny": "block"}[gate["verdict"]]
+                raw_verdict = gate["verdict"]
+                dt = (time.time() - t0) * 1000
+                with _stats_lock:
+                    _gate_stats["policy_verdicts"][verdict] += 1
+                    if layer == "fast_path":
+                        _gate_stats["fast_path_hits"] += 1
+                    elif layer == "text_floor":
+                        _gate_stats["floor_hits"] += 1
+                    else:
+                        _gate_stats["model_calls"] += 1
+                        _stats["calls"] += 1
+                        _stats["lat_ms_sum"] += dt
+                        _stats["lat_max"] = max(_stats["lat_max"], dt)
+                if layer == "model" and gate.get("answers"):
+                    with _strat_lock:
+                        for qname, ans in (gate["answers"] or {}).items():
+                            d = _strat.setdefault(qname, {"n": 0, "lat_ms_sum": 0.0, "conf_sum": 0.0})
+                            d["n"] += 1
+                            d["lat_ms_sum"] += dt
+                            d["conf_sum"] += float(ans.get("confidence") or 0.0)
+                decision_id = f"d-{int(time.time()*1000):x}-{os.urandom(4).hex()}"
+                # CONTRACT: answers/decision_id/provider/policy/latency_ms unchanged.
+                # Hybrid adds 'verdict'/'final_risk' alongside. On fast-path/floor
+                # verdicts the CONTRACT still requires typed answers for every
+                # requested question — synthesize them deterministically from the
+                # verdict (the model was not consulted; the policy layer IS the
+                # answerer, probability 1.0 on the verdict side).
+                answers = (gate.get("answers") or {}) if layer == "model" else {}
+                if not answers:
+                    # model layer with no usable answers (fail-open escalate) ALSO
+                    # synthesizes — the contract never ships an empty answers map
+                    synth_verdict = verdict
+                    for qname, q in questions.items():
+                        qtype = q.get("type", "noul")
+                        if qtype == "choice":
+                            opts = [o if isinstance(o, str) else str(o)
+                                    for o in (q.get("options") or [])]
+                            if opts:
+                                # map verdict onto the option whose side prefix matches
+                                side_idx = next((i for i, o in enumerate(opts)
+                                                 if o.split(":", 1)[0].strip() == verdict),
+                                                len(opts) - 1)
+                                probs = [0.0] * len(opts)
+                                probs[side_idx] = 1.0
+                                answers[qname] = {"type": "choice", "choice": side_idx,
+                                                  "probabilities": dict(zip((o.split(":", 1)[0].strip() for o in opts), probs)),
+                                                  "confidence": 1.0}
+                        else:  # noul: verdict pass→false, escalate/deny→true
+                            tv = "false" if verdict == "pass" else "true"
+                            answers[qname] = {"type": "noul", "noul": tv,
+                                              "probabilities": {"false": 1.0 if tv == "false" else 0.0,
+                                                                "true": 1.0 if tv == "true" else 0.0},
+                                              "confidence": 1.0}
+                res_v2 = {"answers": answers,
+                          "decision_id": decision_id,
+                          "provider": self.provider.describe().get("model", "unknown"),
+                          "policy": req_policy,
+                          "latency_ms": round(dt, 1),
+                          "verdict": verdict,
+                          "final_risk": final_risk}
+                if _LOG is not None:
+                    _LOG.record({
+                        "ts": datetime.now(timezone.utc).isoformat(),
+                        "decision_id": decision_id,
+                        "provider": res_v2["provider"],
+                        "policy": req_policy,
+                        "policy_mode": _policy.POLICY_MODE,
+                        "layer": layer,
+                        "text_floor": gate.get("text_floor"),
+                        "final_risk": final_risk,
+                        "verdict": verdict,
+                        "state_hash": _state_hash(state),
+                        "questions": list((req.get("questions") or {}).keys()),
+                        "answers": answers,
+                        "confidence": (answers or {}).get("confidence"),
+                        "latency_ms": round(dt, 1),
+                    })
+                self._send(200, res_v2)
+                return
+
+            # ---- legacy path (DECISERV_POLICY=model-only) ----------------------
+            res = self.provider.decide(state, questions)
             dt = (time.time() - t0) * 1000
             with _stats_lock:
+                _gate_stats["model_calls"] += 1
                 _stats["calls"] += 1
                 _stats["lat_ms_sum"] += dt
                 _stats["lat_max"] = max(_stats["lat_max"], dt)
