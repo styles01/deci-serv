@@ -108,7 +108,6 @@ def main(argv=None) -> int:
     val = read_jsonl(os.path.join(args.data, "val.jsonl"))
     # The checkpoint dir (typed-decisions/) is INSIDE the laya repo bundle that
     # ships rl_agent_api.py + rl_common.py — import them from there.
-    ckpt_dir = os.path.abspath(args.ckpt_full or args.base)
     if os.path.isdir(args.base):
         repo_root = os.path.dirname(os.path.abspath(args.base)) if os.path.basename(args.base) != "laya" else os.path.abspath(args.base)
         ckpt_dir = os.path.abspath(args.base)
