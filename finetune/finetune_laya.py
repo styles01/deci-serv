@@ -116,7 +116,18 @@ def main(argv=None) -> int:
     from rl_agent_api import RLAgent  # noqa: E402
     from rl_common import QTYPES, build_sequence, collate_items, render_options, temp_bucket  # noqa: E402
     import torch
-    agent = RLAgent(ckpt_dir, device="cuda")
+    import time as _time
+    agent = None
+    for attempt in range(4):
+        try:
+            agent = RLAgent(ckpt_dir, device="cuda")
+            break
+        except Exception as e:  # GB10+torch2.14: cuDevicePrimaryCtxRetain flaps
+            if "out of memory" not in str(e).lower() or attempt == 3:
+                raise
+            print(f"[load-retry] CUDA ctx retain OOM (attempt {attempt + 1}/4), "
+                  "backing off 12s (EXL3 pool retracts asynchronously)")
+            _time.sleep(12)
     model = agent.model
     # LoRA on the encoder only; the head trains jointly (it is the calibration
     # surface, freezing it would fight the encoder). Head LR = 10x LoRA LR.
