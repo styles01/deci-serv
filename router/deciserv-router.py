@@ -42,6 +42,9 @@ CONTEXT_MARKERS = re.compile(
 def classify(message: str):
     m = message.strip()
     low = m.lower()
+    # Explicit URL beats the context floor: "open X and read it" is a browser task.
+    if re.search(BROWSER_PATTERNS[0], low):
+        return "browser", "fast", 0.85
     if CONTEXT_MARKERS.search(low):
         return "reason", "floor", 0.55
     for pat in BROWSER_PATTERNS:
