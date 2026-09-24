@@ -221,8 +221,9 @@ def main(argv=None) -> int:
     torch.save({"state": (merged or agent.model).state_dict(), "cfg": agent.cfg},
                os.path.join(args.out, "laya-gate-lora.pt"))
     with open(os.path.join(args.out, "train_report.json"), "w") as f:
-        json.dump({"final_separation": eval_separation(), "steps": step,
-                   "rows": p["rows"], "lora": p["lora"]}, f, indent=1)
+        sep = eval_separation() or {}
+        json.dump({"final_separation": {k: float(v) for k, v in sep.items()} if isinstance(sep, dict) else sep,
+                   "steps": step, "rows": p["rows"], "lora": p["lora"]}, f, indent=1)
     print(f"[gpu] saved adapter bundle to {args.out}")
 
 
