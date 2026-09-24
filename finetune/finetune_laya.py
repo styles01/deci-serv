@@ -124,7 +124,10 @@ def main(argv=None) -> int:
     lcfg = LoraConfig(r=args.lora_r, lora_alpha=args.lora_alpha,
                       target_modules=list(p["lora"]["targets"]), lora_dropout=0.05)
     model.encoder = get_peft_model(model.encoder, lcfg)
-    model.print_trainable_parameters()
+    trainable = sum(pp.numel() for pp in model.parameters() if pp.requires_grad)
+    total_p = sum(pp.numel() for pp in model.parameters())
+    print(f"[lora] trainable {trainable/1e6:.1f}M / {total_p/1e6:.1f}M "
+          f"({100 * trainable / total_p:.2f}%)")
     enc_params = [pp for pp in model.encoder.parameters() if pp.requires_grad]
     head_params = [pp for n, pp in model.named_parameters() if "encoder." not in n and pp.requires_grad]
     opt = torch.optim.AdamW([
