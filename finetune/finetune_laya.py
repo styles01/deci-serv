@@ -155,7 +155,7 @@ def main(argv=None) -> int:
     from finetune_lib import separation_metric, split_examples_by_class  # noqa: E402
 
     def encode_batch(rows):
-        items, labels = [], []
+        items = []
         for ex in rows:
             q = ex["input"]["question"]
             qdef = {"type": q["type"], "instructions": q["instructions"],
@@ -166,16 +166,15 @@ def main(argv=None) -> int:
             items.append({"ids": seq, "markers": markers, "qtype": QTYPES[q["type"]],
                           "target": ex["target"]["probabilities"], "label": ex["target"]["label"],
                           "episode": 0, "ep_step": 0, "ep_len": 1, "src": "ft"})
-            labels.append(ex["target"]["probabilities"])
         b = collate_items([items], pad_id)
-        return b, torch.tensor(labels, dtype=torch.float32)
+        return b  # b["target"] is option-padded (n, kmax); use masked CE
 
     @torch.no_grad()
     def eval_separation():
         agent.model.eval()
         probs = []
         for i in range(0, len(val), 16):
-            b, _ = encode_batch(val[i:i + 16])
+            b = encode_batch(val[i:i + 16])
             with torch.autocast(device_type="cuda", dtype=amp_dtype):
                 logits, _ = agent.model(b["input_ids"].cuda(), b["attention_mask"].cuda(),
                                         b["marker_pos"].cuda(), b["marker_mask"].cuda(),
@@ -208,14 +207,16 @@ def main(argv=None) -> int:
         rng.shuffle(order)
         for i in range(0, len(order) - bs + 1, bs):
             batch_rows = [train[j] for j in order[i:i + bs]]
-            b, targets = encode_batch(batch_rows)
+            b = encode_batch(batch_rows)
             with torch.autocast(device_type="cuda", dtype=amp_dtype):
                 logits, _ = agent.model(b["input_ids"].cuda(), b["attention_mask"].cuda(),
                                         b["marker_pos"].cuda(), b["marker_mask"].cuda(),
                                         b["qtype"].cuda())
-            k = logits.size(1)
+            kmax = logits.size(1)
             logp = torch.log_softmax(logits.float(), dim=1)
-            loss = -(targets.cuda() * logp).sum(1).mean()  # soft-target CE (proper scoring)
+            targets = b["target"].cuda()          # (n, kmax), zero-padded options
+            opt_mask = (b["marker_mask"]).cuda()  # real option markers per row
+            loss = -(targets * logp * opt_mask).sum(1).mean()  # masked soft-CE
             loss.backward()
             torch.nn.utils.clip_grad_norm_(enc_params + head_params, 1.0)
             opt.step(); opt.zero_grad()
