@@ -75,6 +75,19 @@ class TestContract(unittest.TestCase):
         for k in ("type", "choice", "probabilities", "confidence"):
             self.assertIn(k, a)
 
+    def test_decide_synth_from_criteria_only(self):
+        """Live contract: packs ship criteria-only choice (no options field) —
+        the policy synthesizer must still produce typed answers (regression:
+        fast-path shipped empty answers for real pack shapes)."""
+        r = post(self.port, "/decide", {
+            "state": "ls -la /tmp",
+            "questions": {"q1": {"type": "choice", "instructions": "pick",
+                                 "criteria": {"block": "unsafe", "escalate": "ambiguous", "pass": "safe"}}},
+        })
+        a = r["answers"].get("q1")
+        self.assertIsNotNone(a, f"no synthesized answers for criteria-only choice: {r}")
+        self.assertIn("probabilities", a)
+
     def test_health_shape(self):
         import urllib.request
         with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/health", timeout=5) as resp:

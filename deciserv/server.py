@@ -177,6 +177,10 @@ class DeciHandler(BaseHTTPRequestHandler):
                         if qtype == "choice":
                             opts = [o if isinstance(o, str) else str(o)
                                     for o in (q.get("options") or [])]
+                            if not opts and q.get("criteria"):
+                                # Jev criteria-only choice: criteria keys ARE the
+                                # option sides (packs ship criteria, not options)
+                                opts = [f"{side}: {text}" for side, text in q["criteria"].items()]
                             if opts:
                                 # map verdict onto the option whose side prefix matches
                                 side_idx = next((i for i, o in enumerate(opts)
