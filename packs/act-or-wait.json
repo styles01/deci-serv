@@ -1,0 +1,34 @@
+{
+  "name": "act-or-wait",
+  "description": "Decide whether to act on a time-sensitive opportunity now or wait for better conditions. Classic for prices, bookings, and announcements.",
+  "source": "adapted from muse-jev-playbook (MIT), Bodila51",
+  "policy": "act_now=yes at conf>=0.80 AND regret_risk>=medium -> act now (still honoring confirmations for irreversible actions). act_now=yes at 0.50-0.79 -> surface recommendation to user. signal_quality=weak -> gather one more fresh signal first, then re-ask.",
+  "questions": {
+    "act_now": {
+      "instructions": "Given the current signal and constraints, should we act NOW rather than wait?",
+      "type": "noul",
+      "criteria": {
+        "yes": "Given the current signal and constraints, should we act NOW rather than wait?",
+        "no": "no"
+      }
+    },
+    "regret_risk": {
+      "instructions": "If we wait, how bad is the likely regret (price rise, sold out, missed window)?",
+      "type": "score",
+      "criteria": [
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    "signal_quality": {
+      "instructions": "How trustworthy is the current signal (freshness, source reliability)?",
+      "type": "score",
+      "criteria": [
+        "weak",
+        "ok",
+        "strong"
+      ]
+    }
+  }
+}

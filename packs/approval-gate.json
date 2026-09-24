@@ -1,0 +1,33 @@
+{
+  "name": "approval-gate",
+  "description": "Second tripwire before irreversible actions: send, publish, pay, delete, permission changes. Jev confirms the classification; the human still confirms the action.",
+  "source": "adapted from muse-jev-playbook (MIT), Bodila51",
+  "policy": "is_irreversible=yes OR needs_human=yes (any confidence) -> ask_human: pause and get explicit approval. This recipe NEVER authorizes the action itself; it only classifies. The agent's own confirmation policy still applies after approval.",
+  "questions": {
+    "blast_radius": {
+      "instructions": "If this goes wrong, how bad is the blast radius?",
+      "type": "score",
+      "criteria": [
+        "small",
+        "moderate",
+        "large"
+      ]
+    },
+    "is_irreversible": {
+      "instructions": "Would this action be hard or impossible to undo (send, publish, pay, delete, permission change)?",
+      "type": "noul",
+      "criteria": {
+        "yes": "Would this action be hard or impossible to undo (send, publish, pay, delete, permission change)?",
+        "no": "no"
+      }
+    },
+    "needs_human": {
+      "instructions": "Should a human explicitly approve this before it runs, regardless of how routine it looks?",
+      "type": "noul",
+      "criteria": {
+        "yes": "Should a human explicitly approve this before it runs, regardless of how routine it looks?",
+        "no": "no"
+      }
+    }
+  }
+}

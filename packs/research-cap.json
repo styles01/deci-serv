@@ -1,0 +1,33 @@
+{
+  "name": "research-cap",
+  "description": "Bound an open-ended research task before it starts: how many sources, how deep, and when to stop and synthesize.",
+  "source": "adapted from muse-jev-playbook (MIT), Bodila51",
+  "policy": "cap_tight=yes (conf>=0.80) -> research_capped at max_browser_sources. synthesis_ready=yes -> stop fetching, synthesize now. depth=deep only at conf>=0.80, otherwise standard.",
+  "questions": {
+    "cap_tight": {
+      "instructions": "Can this be answered well with at most 5 sources instead of an exhaustive search?",
+      "type": "noul",
+      "criteria": {
+        "yes": "Can this be answered well with at most 5 sources instead of an exhaustive search?",
+        "no": "no"
+      }
+    },
+    "depth": {
+      "instructions": "How deep should the research go?",
+      "type": "score",
+      "criteria": [
+        "surface (headlines + snippets)",
+        "standard (open top sources)",
+        "deep (follow citations, compare)"
+      ]
+    },
+    "synthesis_ready": {
+      "instructions": "Do we already have enough signal to synthesize a useful answer without more fetching?",
+      "type": "noul",
+      "criteria": {
+        "yes": "Do we already have enough signal to synthesize a useful answer without more fetching?",
+        "no": "no"
+      }
+    }
+  }
+}

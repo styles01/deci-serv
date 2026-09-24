@@ -1,0 +1,38 @@
+{
+  "name": "triage",
+  "description": "Classify an incoming request and decide how much machinery it deserves. Ask before any expensive work.",
+  "source": "adapted from muse-jev-playbook (MIT), Bodila51",
+  "policy": "intent=chat (conf>=0.55) -> chat_only. intent=lookup -> run_deterministic. intent=account -> ask_human. complexity=heavy -> consider research_capped or allow_subagent via needs_subagent noul.",
+  "questions": {
+    "complexity": {
+      "instructions": "How much agent effort is justified for this request?",
+      "type": "score",
+      "criteria": [
+        "trivial",
+        "normal",
+        "heavy"
+      ]
+    },
+    "intent": {
+      "instructions": "What kind of work does this request mainly need?",
+      "type": "choice",
+      "criteria": {
+        "account": "Send, publish, pay, delete, or change permissions",
+        "browser": "Needs interactive browser clicks",
+        "chat": "Short answer or conversation; no tools needed",
+        "coding": "Edit code, tests, or repo work",
+        "lookup": "Known file, API, or status check; mostly deterministic",
+        "research": "Needs web search and synthesis",
+        "write": "Draft long prose, email, or document"
+      }
+    },
+    "needs_tools_at_all": {
+      "instructions": "Can this be answered well with no tools at all (pure knowledge / conversation)?",
+      "type": "noul",
+      "criteria": {
+        "yes": "Can this be answered well with no tools at all (pure knowledge / conversation)?",
+        "no": "no"
+      }
+    }
+  }
+}

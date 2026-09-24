@@ -1,0 +1,34 @@
+{
+  "name": "rank-options",
+  "description": "Rank a bounded set of candidate options (dates, products, vendors, headlines) so the agent only spends deep effort on the top few.",
+  "source": "adapted from muse-jev-playbook (MIT), Bodila51",
+  "policy": "rankable=yes (conf>=0.80) -> rank cheaply, deep-dive only top-N per topn. decide_now=yes (conf>=0.80) -> choose now and report. Otherwise research_capped.",
+  "questions": {
+    "decide_now": {
+      "instructions": "Is there enough signal to pick a winner now without further research?",
+      "type": "noul",
+      "criteria": {
+        "yes": "Is there enough signal to pick a winner now without further research?",
+        "no": "no"
+      }
+    },
+    "rankable": {
+      "instructions": "Is this a bounded set of comparable options that can be ranked cheaply before any deep per-option work?",
+      "type": "noul",
+      "criteria": {
+        "yes": "Is this a bounded set of comparable options that can be ranked cheaply before any deep per-option work?",
+        "no": "no"
+      }
+    },
+    "topn": {
+      "instructions": "How many top options deserve deep follow-up work?",
+      "type": "score",
+      "criteria": [
+        "one",
+        "few (2-3)",
+        "several (4-6)",
+        "many"
+      ]
+    }
+  }
+}

@@ -23,13 +23,36 @@ Usage:
     python -m deciserv.server --checkpoint /path/to/model --port 8710 --precision fp16
 """
 from __future__ import annotations
-import argparse, json, sys, time, threading
+import argparse, hashlib, json, os, sys, time, threading, uuid
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .providers import get_provider
 
 _stats = {"calls": 0, "lat_ms_sum": 0.0, "lat_max": 0.0, "err": 0}
 _stats_lock = threading.Lock()
+
+# Stratified metrics: per question-type x decision-class bins (R3 /metrics v2)
+_strat = {}  # {question_name: {"n": int, "lat_ms_sum": float, "conf_sum": float}}
+_strat_lock = threading.Lock()
+
+class DecisionLog:
+    """Persistent JSONL decision log (v2). Logs the decision, never the payload
+    (muse-jev-playbook hard rule 4): state stored as SHA-256 hash + length only,
+    raw probabilities kept — they are the training corpus in waiting."""
+    def __init__(self, path):
+        self.path = path
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        self._lock = threading.Lock()
+    def record(self, entry: dict):
+        with self._lock:
+            with open(self.path, "a") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+_LOG = None  # set at startup
+
+def _state_hash(state) -> str:
+    s = json.dumps(state, sort_keys=True, ensure_ascii=False) if not isinstance(state, str) else state
+    return hashlib.sha256(s.encode()).hexdigest()[:16]
 
 
 class DeciHandler(BaseHTTPRequestHandler):
@@ -56,8 +79,19 @@ class DeciHandler(BaseHTTPRequestHandler):
                      "p_avg_ms": round(_stats["lat_ms_sum"] / n, 1),
                      "p_max_ms": round(_stats["lat_max"], 1),
                      "errors": _stats["err"]}
+            with _strat_lock:
+                m["by_question"] = {q: {"n": d["n"],
+                                        "avg_ms": round(d["lat_ms_sum"] / max(d["n"], 1), 1),
+                                        "avg_conf": round(d["conf_sum"] / max(d["n"], 3))}
+                                    for q, d in sorted(_strat.items())}
             m.update(self.provider.memory_stats())
             self._send(200, m)
+        elif self.path == "/metrics/reset":
+            with _stats_lock:
+                _stats.update({"calls": 0, "lat_ms_sum": 0.0, "lat_max": 0.0, "err": 0})
+            with _strat_lock:
+                _strat.clear()
+            self._send(200, {"status": "reset", "log_preserved": bool(_LOG)})
         else:
             self.send_response(404)
             self.end_headers()
@@ -77,7 +111,34 @@ class DeciHandler(BaseHTTPRequestHandler):
                 _stats["calls"] += 1
                 _stats["lat_ms_sum"] += dt
                 _stats["lat_max"] = max(_stats["lat_max"], dt)
-            self._send(200, res)
+            with _strat_lock:
+                for qname, ans in (res.get("answers") or {}).items():
+                    d = _strat.setdefault(qname, {"n": 0, "lat_ms_sum": 0.0, "conf_sum": 0.0})
+                    d["n"] += 1
+                    d["lat_ms_sum"] += dt
+                    d["conf_sum"] += float(ans.get("confidence") or 0.0)
+            # v2 envelope: provenance + identity on every response (OpenClaw
+            # DecisionProvider contract discipline).
+            decision_id = f"d-{int(time.time()*1000):x}-{os.urandom(4).hex()}"
+            policy = req.get("policy", "safety")
+            res_v2 = {**res,
+                      "decision_id": decision_id,
+                      "provider": self.provider.describe().get("model", "unknown"),
+                      "policy": policy,
+                      "latency_ms": round(dt, 1)}
+            if _LOG is not None:
+                _LOG.record({
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "decision_id": decision_id,
+                    "provider": res_v2["provider"],
+                    "policy": policy,
+                    "state_hash": _state_hash(req.get("state")),
+                    "questions": list((req.get("questions") or {}).keys()),
+                    "answers": res.get("answers", {}),
+                    "confidence": res.get("confidence"),
+                    "latency_ms": round(dt, 1),
+                })
+            self._send(200, res_v2)
         except Exception as e:  # noqa: BLE001 — gate must answer, not crash
             with _stats_lock:
                 _stats["err"] += 1
@@ -93,7 +154,13 @@ def main(argv=None):
     ap.add_argument("--port", type=int, default=8710)
     ap.add_argument("--precision", default="fp16", choices=["fp16", "bf16", "fp32"])
     ap.add_argument("--device", default="cuda")
+    ap.add_argument("--log-path", default=os.environ.get("DECISERV_LOG",
+                    os.path.expanduser("~/deciserv-data/decisions/decisions.jsonl")),
+                    help="persistent JSONL decision log path (state stored hashed)")
     args = ap.parse_args(argv)
+
+    global _LOG
+    _LOG = DecisionLog(args.log_path)
 
     from .providers import load_provider
     provider = load_provider(args.provider, args.checkpoint, precision=args.precision, device=args.device)
