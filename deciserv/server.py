@@ -82,7 +82,7 @@ class DeciHandler(BaseHTTPRequestHandler):
             with _strat_lock:
                 m["by_question"] = {q: {"n": d["n"],
                                         "avg_ms": round(d["lat_ms_sum"] / max(d["n"], 1), 1),
-                                        "avg_conf": round(d["conf_sum"] / max(d["n"], 3))}
+                                        "avg_conf": round(d["conf_sum"] / max(d["n"], 1), 4)}
                                     for q, d in sorted(_strat.items())}
             m.update(self.provider.memory_stats())
             self._send(200, m)
