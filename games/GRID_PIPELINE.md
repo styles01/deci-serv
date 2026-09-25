@@ -25,6 +25,35 @@ PLAYWRIGHT_BROWSERS_PATH=/Users/clawdio/.pw-browsers \
 python3 games/shoot_sixup.py --out /tmp/sixup.mp4 --seconds 16 --fps 8
 ```
 
+## Live multiview grid — all six games in one browser window (port 8030)
+
+`games/multiview/` is a tiny static site (one HTML page + stdlib server) that
+tiles the six REAL showcase pages as iframes in a 2x3 grid, dark theme matching
+`vendor/arbiter/showcase/_lib/theme.css` (0xBakeer, MIT — credit chip stays in
+the header). Live means live: each iframe runs its own game loop against the
+gate; nothing is recorded or replayed.
+
+```bash
+# one command (the 8010 showcase server must already be up — it is):
+nohup python3 games/multiview/serve_multiview.py --port 8030 >> games/multiview/server.log 2>&1 &
+
+# then watch, any browser:
+#   on this Mac:  http://127.0.0.1:8030/
+#   on the LAN:   http://192.168.2.173:8030/   (James can open this directly)
+```
+
+- Page: `games/multiview/index.html` — header row = 'deciserv plays' wordmark +
+  credit chip + live clock; six labeled panels (game name, frame host:port, LIVE
+  tag). Fits 1920x1080 with no scrolling; scales down on smaller windows.
+- Server: `games/multiview/serve_multiview.py` — stdlib `http.server`, binds
+  0.0.0.0, serves the multiview dir, silent log. Do not touch 8010/8011.
+- Scores: the iframes are cross-origin (:8030 page vs :8010 frames), so the grid
+  cannot poll scores — each panel instead shows the game's own HUD, which
+  already carries its live score. If a future grid is served FROM :8010,
+  same-origin JS polling becomes possible.
+- Verified with Playwright (screenshot: `games/multiview_live.png`): all six
+  panels load and render live boards.
+
 Mac env: ~/.npm and ~/Library/Caches/ms-playwright are symlinks to an
 unwritable external SSD → `npm_config_cache=/Users/clawdio/.npm-cache-local`
 and `PLAYWRIGHT_BROWSERS_PATH=/Users/clawdio/.pw-browsers` (browser v1208
