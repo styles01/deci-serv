@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import subprocess
 import sys
 import time
@@ -23,7 +24,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "games"))
 
-PORT = 8010
+PORT = int(os.environ.get("SIXUP_PORT", "8010"))
 BASE = f"http://127.0.0.1:{PORT}"
 GAMES = ["snake", "paddle", "hopper", "crossing", "mines", "dungeon"]  # his grid order
 CAPTIONS = {
