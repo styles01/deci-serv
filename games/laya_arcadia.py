@@ -198,6 +198,9 @@ class Mines:
         return [c for c in [(x, y) for x in range(self.N) for y in range(self.N)]
                 if c not in self.opened]
 
+    def legal(self):
+        return self.candidates()
+
     def render(self):
         return (f"Mines board 5 by 5, {self.K} hidden mines. "
                 f"{len(self.opened)} cells opened safely, {len(self.candidates())} closed.")
@@ -451,29 +454,39 @@ class Hopper:
 GAMES = {"snake": Snake, "mines": Mines, "crossing": Crossing, "hopper": Hopper}
 
 # ---------------------------------------------------------------- runner ----
-def play(game_cls, name, server, episodes, log):
+def play(game_cls, name, server, episodes, log, full=False, epsilon=0.0, seed0=13):
     scores, interventions, lat = [], 0, []
     for ep in range(episodes):
-        g = game_cls(seed=ep * 7919 + 13)
+        g = game_cls(seed=seed0 + ep * 7919)
         while g.alive and g.steps < 250:
             t0 = time.time()
-            answers = {}
+            answers, questions, state_text = {}, {}, ""
             if server:
                 try:
-                    resp = ask_server(server, g.render(), g.questions())
+                    state_text = g.render()
+                    questions = g.questions()
+                    resp = ask_server(server, state_text, questions)
                     answers = resp.get("answers", resp)
                     lat.append(resp.get("latency_ms", (time.time() - t0) * 1000))
                 except Exception:
                     lat.append((time.time() - t0) * 1000)
             act, probs = g.decide(answers)
+            if epsilon and len(g.legal()) > 1:
+                import random as _r
+                if _r.random() < epsilon:
+                    act = _r.choice(g.legal())
             if name == "snake":
                 act2, why = g.shield(act, probs)
                 if why:
                     interventions += 1
                 act = act2
             ev = g.step(act)
-            log.write(json.dumps({"game": name, "ep": ep, "step": g.steps,
-                                  "action": str(act), "event": ev, "score": g.score}) + "\n")
+            rec = {"game": name, "ep": ep, "step": g.steps,
+                   "action": str(act), "event": ev, "score": g.score}
+            if full:
+                rec.update({"state": state_text, "questions": questions,
+                            "answers": answers})
+            log.write(json.dumps(rec) + "\n")
         scores.append(g.score)
     lat_sorted = sorted(lat)
     return {"game": name, "episodes": episodes, "mean": round(sum(scores) / len(scores), 2),
@@ -488,6 +501,10 @@ if __name__ == "__main__":
     ap.add_argument("--offline", action="store_true",
                     help="no server: model probabilities absent, shield+fallback plays")
     ap.add_argument("--out", default="/tmp/arcadia_results.json")
+    ap.add_argument("--epsilon", type=float, default=0.0,
+                    help="exploration: take a random legal action this often")
+    ap.add_argument("--full", action="store_true",
+                    help="log state/questions/answers per move (training harvest)")
     args = ap.parse_args()
     log = open("/tmp/arcadia_moves.jsonl", "w")
     results = []
@@ -495,7 +512,7 @@ if __name__ == "__main__":
         name = name.strip()
         if name not in GAMES:
             continue
-        r = play(GAMES[name], name, None if args.offline else args.server, args.episodes, log)
+        r = play(GAMES[name], name, None if args.offline else args.server, args.episodes, log, full=args.full, epsilon=args.epsilon)
         results.append(r)
         print(r, flush=True)
     log.close()
