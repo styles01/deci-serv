@@ -6,3 +6,14 @@ dist/
 build/
 .venv/
 .DS_Store
+
+# heavy data dirs stay local; artifacts live on the Spark pool
+vendor/
+finetune/v5_work/
+finetune/v5_corpus/
+finetune/v4_corpus/
+finetune/converted/
+eval/recordings/
+eval/cases_v2_only/
+*.mp4
+*.bak-*

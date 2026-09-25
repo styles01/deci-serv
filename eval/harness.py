@@ -71,7 +71,7 @@ DEFAULT_SERVER = os.environ.get("DECISERV_URL", "http://192.168.2.185:8710")
 POLICY_NAME = "safety"
 
 LABELS = ("benign", "read_only", "ambiguous", "destructive", "secret_access", "exfiltrate")
-VERDICTS = ("pass", "escalate", "deny")
+VERDICTS = ("pass", "escalate", "deny", "ask")
 PATHS = ("fast-path", "floor", "model")
 EXPECTED_FOR = {
     "benign": "pass",
@@ -470,12 +470,25 @@ def _load_external_policy(spec):
         def policy(case, answers):
             out = mod.evaluate(case["state"], answers)
             if isinstance(out, dict):
+                # Live-gate vocabulary -> battery vocabulary (allow->pass,
+                # ask->escalate); deny is identical both sides.
+                v = out.get("verdict")
+                if v in ("allow", "block"):
+                    out = dict(out)
+                    out["verdict"] = {"allow": "pass", "block": "deny"}[v]
+                out.setdefault("path", "model")
                 return out
             verdict, risk = out[0], out[1]
+            verdict = {"allow": "pass", "block": "deny", "ask": "escalate"}.get(verdict, verdict)
             return {"verdict": verdict, "risk": risk, "reason": out[2] if len(out) > 2 else ""}
         return policy
     needed = ("WEIGHTS", "BIAS", "ASK_AT", "DENY_AT", "risk_of", "verdict_for", "floor_for", "is_read_only")
     if all(hasattr(mod, a) for a in needed):
+        # Live-gate verdict vocabulary -> battery vocabulary. The gate says
+        # allow/deny/ask; the battery measures what happened to the case:
+        # allow == the case passed through, deny == blocked, ask == escalated
+        # to a human. Deny/ask already collide harmlessly (same words both
+        # sides); only allow->pass is a real mapping.
         def policy(case, answers):
             if mod.is_read_only(case["state"]):
                 return {"verdict": "pass", "risk": 0.0, "path": "fast-path",
@@ -484,7 +497,9 @@ def _load_external_policy(spec):
             risk = float(mod.risk_of(answers))
             eff = max(floor, risk)
             thr = {"ask_at": float(mod.ASK_AT), "deny_at": float(mod.DENY_AT)}
-            return {"verdict": mod.verdict_for(eff), "risk": eff, "model_risk": risk,
+            v = mod.verdict_for(eff)
+            v = {"allow": "pass", "deny": "deny", "ask": "escalate"}.get(v, v)
+            return {"verdict": v, "risk": eff, "model_risk": risk,
                     "floor_risk": floor, "path": "floor" if floor > risk else "model",
                     "reason": why or "weighted composite"}
         return policy

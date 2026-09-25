@@ -1,0 +1,12 @@
+{
+  "selected_tasks": 625,
+  "completed_tasks": 625,
+  "failed_tasks": 0,
+  "outdated_datasets": 0,
+  "parquet_files": 1867,
+  "excluded_source_families": [
+    "bigbench/",
+    "mmlu/",
+    "blimp/"
+  ]
+}

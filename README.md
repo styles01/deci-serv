@@ -49,6 +49,20 @@ curl -s localhost:8710/decide -H 'Content-Type: application/json' -d '{
 
 That's the whole product: a **resident decision gate** your agent framework consults before tool calls, with an honest probability attached to every answer.
 
+### Watch it decide
+
+One forward pass per move, six games at once — the [arbiter](https://github.com/0xBakeer/arbiter) showcase pointed at DeciServ (see Credits):
+
+![DeciServ playing all six Laya Arcadia games](games/deciserv_sixup.png)
+
+*Live grid video: [`games/deciserv_sixup.mp4`](games/deciserv_sixup.mp4) — each panel is arbiter's real showcase page answering through DeciServ in real time.*
+
+```bash
+# run the showcase yourself against a gate at :8710
+python games/serve_showcase.py --port 8010 --gate http://<gate-host>:8710
+open http://127.0.0.1:8010/showcase/
+```
+
 ---
 
 ## The contract
@@ -114,6 +128,10 @@ deci-serv/
 ├── deciserv/           The server + provider registry
 │   ├── server.py       stdlib HTTP, /decide /health /metrics
 │   └── providers/      Model backends (base contract + laya)
+├── games/              Six-game showcase adapter + grid compositor
+│   ├── serve_showcase.py   Serves vendor/arbiter showcase over /decide
+│   └── shoot_sixup.py      Six-up 1920×1080 grid video compositor
+├── vendor/arbiter/     0xBakeer's arbiter (MIT) — unmodified, see NOTICE.md
 ├── tests/              Frozen-transcript tests (batched == sequential, contract shapes)
 ├── examples/           Client snippets: Hermes pre_tool_call hook, plain requests
 └── docs/               Field guide: decision models, runtimes, calibration
@@ -136,6 +154,8 @@ If this repository saved you a few gigs of unified memory, you can support the w
 
 ## Credits
 
-DeciServ's reference provider is [Laya](https://huggingface.co/convaiinnovations/laya) (RLCD-trained, calibrated against strictly proper scoring rules). The typed-question contract follows the Jev request shape popularized by TypeSafe. Calibration guidance builds on Guo et al. (2017) temperature scaling and conformal risk control.
+DeciServ's reference provider is [Laya](https://huggingface.co/convaiinnovations/laya) (RLCD-trained, calibrated against strictly proper scoring rules), by [Convai Innovations](https://huggingface.co/convaiinnovations) / Nandha Kishor M ([@NandhaKishorM](https://github.com/NandhaKishorM)), Apache-2.0. The typed-question contract follows the Jev request shape popularized by TypeSafe. Calibration guidance builds on Guo et al. (2017) temperature scaling and conformal risk control.
+
+**[arbiter](https://github.com/0xBakeer/arbiter)** by **[@0xBakeer](https://github.com/0xBakeer)** (MIT) is the six-game showcase: the game pages, harness, panel UI, theme and replay format in `vendor/arbiter/` are his work, kept byte-identical to upstream and served over DeciServ with an on-the-wire rebrand (`games/serve_showcase.py`). The `games/arcadia_extra.py` paddle and dungeon games are ports of his logic (MIT). See [NOTICE.md](NOTICE.md) for the full third-party component notice.
 
 Thanks to the ModernBERT, mmBERT, PyTorch, and DGX Spark communities.

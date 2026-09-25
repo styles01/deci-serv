@@ -8,9 +8,23 @@ Contract per tick (one forward pass on the gate server):
   - noul:   one auxiliary boolean with exact ground truth (calibration check)
 Shield mirrors our DeciServ floors: code owns safety, model owns preference.
 
+Request shaping (server contract: POST /decide {"state", "questions"} where
+questions is a DICT qname->spec — verified in deciserv/server.py:122-124):
+  - default (--batch-questions, on): all of a state's questions go in ONE
+    /decide call per move. Single-question states are unchanged (one call,
+    one question). Multi-question moves carry "batched"/"posts" metadata
+    in --full move logs.
+  - --no-batch-questions: one /decide call PER question, answers merged
+    before g.decide() — per-question latency isolation for SLO work.
+  - --latency-export [path]: after each episode append a per-game latency
+    row (p50/p95/max ms, decisions/sec, server-ms sum) to a sidecar JSONL;
+    default sidecar: <out>-latency.jsonl beside the --out results file.
+
 Usage:
   python3 laya_arcadia.py --games snake,mines --episodes 20 --server http://192.168.2.185:8710
   python3 laya_arcadia.py --offline   # shield-preference baseline, no server
+  python3 laya_arcadia.py --games snake --episodes 5 --no-batch-questions \\
+      --latency-export   # per-question posts + latency sidecar
 """
 import argparse, json, time, urllib.request, random
 
@@ -20,6 +34,26 @@ def ask_server(server, state, questions, timeout=30):
                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read())
+
+def pctl(values, q):
+    """Nearest-rank percentile (same math as eval/harness.pctl); empty-safe."""
+    if not values:
+        return None
+    vals = sorted(values)
+    k = max(1, -(-q * len(vals) // 100))
+    return vals[min(k, len(vals)) - 1]
+
+def decide_once(server, state_text, questions, lat, timeout=30):
+    """One /decide POST; appends latency ms to lat; returns answers dict ({} on error)."""
+    t0 = time.time()
+    try:
+        resp = ask_server(server, state_text, questions, timeout=timeout)
+        answers = resp.get("answers", resp)
+        lat.append(float(resp.get("latency_ms") or (time.time() - t0) * 1000))
+        return answers if isinstance(answers, dict) else {}
+    except Exception:
+        lat.append((time.time() - t0) * 1000)
+        return {}
 
 # ---------------------------------------------------------------- snake ----
 class Snake:
@@ -454,22 +488,37 @@ class Hopper:
 GAMES = {"snake": Snake, "mines": Mines, "crossing": Crossing, "hopper": Hopper}
 
 # ---------------------------------------------------------------- runner ----
-def play(game_cls, name, server, episodes, log, full=False, epsilon=0.0, seed0=13):
+def play(game_cls, name, server, episodes, log, full=False, epsilon=0.0, seed0=13,
+         batch=True, timeout=30, latency_sink=None, latency_rows=None):
+    """Play `episodes` of one game. batch=True: one /decide per move carrying
+    the state's full questions dict (single-question states unchanged — one
+    call, one question). batch=False: one /decide PER question, merged before
+    decide(). After each episode appends a per-game latency row to
+    latency_rows (for the --latency-export sidecar)."""
     scores, interventions, lat = [], 0, []
     for ep in range(episodes):
         g = game_cls(seed=seed0 + ep * 7919)
+        t_ep = time.time()
         while g.alive and g.steps < 250:
-            t0 = time.time()
             answers, questions, state_text = {}, {}, ""
             if server:
-                try:
-                    state_text = g.render()
-                    questions = g.questions()
-                    resp = ask_server(server, state_text, questions)
-                    answers = resp.get("answers", resp)
-                    lat.append(resp.get("latency_ms", (time.time() - t0) * 1000))
-                except Exception:
-                    lat.append((time.time() - t0) * 1000)
+                state_text = g.render()
+                questions = g.questions()
+                if batch:
+                    answers = decide_once(server, state_text, questions, lat, timeout=timeout)
+                    if full:
+                        g._last_posts = [{"qs": list(questions.keys()), "batched": True,
+                                          "n_questions": len(questions)}]
+                else:
+                    # one call per question, merged (per-question latency isolation)
+                    answers, posts = {}, []
+                    for qname, spec in questions.items():
+                        a = decide_once(server, state_text, {qname: spec}, lat, timeout=timeout)
+                        if isinstance(a, dict):
+                            answers.update(a)
+                        posts.append({"qs": [qname], "batched": False})
+                    if full:
+                        g._last_posts = posts
             act, probs = g.decide(answers)
             if epsilon and len(g.legal()) > 1:
                 import random as _r
@@ -486,12 +535,35 @@ def play(game_cls, name, server, episodes, log, full=False, epsilon=0.0, seed0=1
             if full:
                 rec.update({"state": state_text, "questions": questions,
                             "answers": answers})
+                if getattr(g, "_last_posts", None):
+                    rec["posts"] = g._last_posts
             log.write(json.dumps(rec) + "\n")
         scores.append(g.score)
+        if latency_rows is not None:
+            latency_rows.append(latency_row(name, ep, scores[-1], lat, t_start=t_ep))
+            if latency_sink is not None:
+                try:
+                    latency_sink.write(json.dumps(latency_rows[-1]) + "\n")
+                    latency_sink.flush()
+                except Exception:  # noqa: BLE001 — sidecar never breaks play
+                    latency_sink = None
     lat_sorted = sorted(lat)
     return {"game": name, "episodes": episodes, "mean": round(sum(scores) / len(scores), 2),
             "max": max(scores), "shield_interventions": interventions,
-            "latency_ms_p50": round(lat_sorted[len(lat_sorted) // 2], 1) if lat_sorted else None}
+            "latency_ms_p50": round(lat_sorted[len(lat_sorted) // 2], 1) if lat_sorted else None,
+            "batch_questions": bool(batch)}
+
+
+def latency_row(name, ep, score, lat, t_start=None):
+    """Per-episode latency stats row (sidecar JSONL): p50/p95/max, decisions/sec."""
+    n = len(lat)
+    span = (time.time() - t_start) if t_start else None
+    return {"game": name, "ep": ep, "final_score": score, "n_decisions": n,
+            "latency_ms_p50": pctl(lat, 50), "latency_ms_p95": pctl(lat, 95),
+            "latency_ms_max": round(max(lat), 1) if lat else None,
+            "latency_ms_sum": round(sum(lat), 1) if lat else 0.0,
+            "decisions_per_sec": (round(n / span, 2) if (span and span > 0 and n) else None),
+            "wall_s": round(span, 3) if span is not None else None}
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
@@ -505,16 +577,44 @@ if __name__ == "__main__":
                     help="exploration: take a random legal action this often")
     ap.add_argument("--full", action="store_true",
                     help="log state/questions/answers per move (training harvest)")
+    ap.add_argument("--batch-questions", dest="batch_questions", action="store_true",
+                    default=True,
+                    help="one /decide per move with ALL of the state's questions "
+                         "(default on; single-question states are unchanged)")
+    ap.add_argument("--no-batch-questions", dest="batch_questions", action="store_false",
+                    help="one /decide per QUESTION, merged before decide() "
+                         "(per-question latency isolation)")
+    ap.add_argument("--latency-export", dest="latency_export", nargs="?", const="auto",
+                    default=None, metavar="PATH",
+                    help="append per-game-per-episode latency rows (p50/p95/ms-max, "
+                         "decisions/sec) to a sidecar JSONL; 'auto' = <out>-latency.jsonl")
+    ap.add_argument("--timeout", type=float, default=30.0, help="per-call HTTP timeout seconds")
     args = ap.parse_args()
+    if args.latency_export == "auto":
+        root, _dot, _ext = args.out.partition(".json")
+        if not root:
+            root = args.out
+        args.latency_export = root + "-latency.jsonl"
     log = open("/tmp/arcadia_moves.jsonl", "w")
+    latency_rows = []
+    latency_sink = open(args.latency_export, "a") if args.latency_export else None
+    if latency_sink:
+        print("latency sidecar:", args.latency_export, flush=True)
     results = []
     for name in args.games.split(","):
         name = name.strip()
         if name not in GAMES:
             continue
-        r = play(GAMES[name], name, None if args.offline else args.server, args.episodes, log, full=args.full, epsilon=args.epsilon)
+        r = play(GAMES[name], name, None if args.offline else args.server, args.episodes,
+                 log, full=args.full, epsilon=args.epsilon,
+                 batch=args.batch_questions, timeout=args.timeout,
+                 latency_sink=latency_sink, latency_rows=latency_rows)
         results.append(r)
         print(r, flush=True)
     log.close()
+    if latency_sink:
+        latency_sink.close()
     json.dump(results, open(args.out, "w"), indent=1)
     print("saved", args.out)
+    if latency_rows:
+        print(f"latency rows written: {len(latency_rows)}")
