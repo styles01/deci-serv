@@ -7,7 +7,13 @@
 <title>deciserv plays — six games, one grid</title>
 <style>
 /* Multiview grid tiling 0xBakeer's showcase pages (served by games/serve_showcase.py on :8010).
-   Theme tokens copied from vendor/arbiter/showcase/_lib/theme.css (arbiter showcase, MIT). */
+   Theme tokens copied from vendor/arbiter/showcase/_lib/theme.css (arbiter showcase, MIT).
+
+   SIZING MODEL (matches the six-up video compositor, games/shoot_sixup.py):
+   1920x1080 canvas, 54px header, 3x2 grid, 12px gutters.
+   Each panel is EXACTLY 628x471 — the same viewport the video tiles are shot at
+   (1280x800 CSS scaled by 0.4906) — and the iframe content is scaled with CSS
+   transform so the whole game page (board + decision panel) fits like a video tile. */
 :root {
   --bg: #0A0F1E; --surface: #0E1528; --line: #1E2842; --line-2: #2B3758; --track: #151D35;
   --ink: #E9EDF7; --muted: #8B95B3; --faint: #5E6887;
@@ -49,36 +55,41 @@ body {
 .dot.pulse { animation: pulse 2s var(--ease, ease) infinite; }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
 
-/* ---------- 2x3 grid ---------- */
+/* ---------- 3x2 grid (video layout) ---------- */
 .grid {
   flex: 1; min-height: 0;
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  grid-template-rows: 1fr 1fr 1fr;
-  gap: 10px; padding: 10px;
+  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  gap: 12px; padding: 12px;
 }
 .panel {
   display: flex; flex-direction: column; min-width: 0; min-height: 0;
   background: var(--surface);
   border: 1px solid var(--line); border-radius: 8px; overflow: hidden;
+  position: relative;
 }
 .panel-head {
   flex: none; display: flex; align-items: center; gap: 8px;
-  padding: 5px 10px; border-bottom: 1px solid var(--line);
+  padding: 4px 10px; border-bottom: 1px solid var(--line);
 }
 .panel-head .name {
-  font-size: 12px; font-weight: 600; letter-spacing: .02em;
+  font-size: 11px; font-weight: 600; letter-spacing: .06em;
   text-transform: uppercase; color: var(--ink);
 }
-.panel-head .gate { color: var(--faint); font-size: 11px; font-family: var(--mono); }
 .panel-head .spacer { flex: 1; }
 .panel-head .live {
-  color: var(--live); font-size: 10px; font-weight: 600; letter-spacing: .08em;
+  color: var(--live); font-size: 9px; font-weight: 600; letter-spacing: .08em;
 }
-.panel-frame { flex: 1; min-height: 0; position: relative; }
+/* The frame content is scaled to fit the cell (like the video compositor's
+   LANCZOS resize): 1280x800 virtual viewport -> cell size, uniform scale. */
+.panel-frame { flex: 1; min-height: 0; position: relative; overflow: hidden; }
 .panel-frame iframe {
-  position: absolute; inset: 0; width: 100%; height: 100%;
   border: 0; background: var(--bg);
+  width: 1280px; height: 800px;
+  transform-origin: top left;
+  position: absolute; top: 0; left: 0;
+  pointer-events: auto;
 }
 
 /* fit a 1920x1080 window with no scrolling; scale down gracefully on smaller windows */
@@ -102,33 +113,55 @@ body {
 
 <script>
 "use strict";
-/* Origin note: this page is served on :8030 while the showcase iframes are
-   on :8010 — different ports mean different origins, so we cannot read scores
-   out of the frames. Panels are labeled instead; each frame keeps its own live
-   HUD from the showcase page itself. */
+/* Each iframe renders the FULL showcase page at a fixed 1280x800 virtual viewport
+   (same as the six-up video's per-tab viewport), then CSS-scales it to fill its
+   cell uniformly — so panels look exactly like the video tiles, letterboxed by
+   aspect fit instead of squeezed by the 380px decision column. */
 (function () {
   var GAMES = ["snake", "paddle", "hopper", "crossing", "mines", "dungeon"];
-  /* Default host for the frames is 127.0.0.1 (spec). When the grid itself is
-     opened from another machine (LAN, e.g. http://192.168.2.173:8030/), point
-     the frames at that hostname instead — 127.0.0.1 would be the viewer's own
-     machine. games/serve_showcase.py binds :8010 on all interfaces. */
+  var VW = 1280, VH = 800;               /* virtual viewport per frame */
   var local = location.hostname === "127.0.0.1" || location.hostname === "localhost";
   var HOST = local ? "127.0.0.1" : location.hostname;
   var BASE = "http://" + HOST + ":8010/showcase/";
   var grid = document.getElementById("grid");
+
   GAMES.forEach(function (g) {
     var panel = document.createElement("section");
     panel.className = "panel";
     panel.innerHTML =
       '<div class="panel-head">' +
         '<span class="name">' + g + '</span>' +
-        '<span class="gate">' + HOST + ':8010</span>' +
         '<span class="spacer"></span>' +
         '<span class="live">LIVE</span>' +
       '</div>' +
-      '<div class="panel-frame"><iframe src="' + BASE + g + '/" title="deciserv plays ' + g + '" loading="eager"></iframe></div>';
+      '<div class="panel-frame"><iframe src="' + BASE + g + '/" title="deciserv plays ' + g +
+        '" loading="eager" tabindex="-1"></iframe></div>';
     grid.appendChild(panel);
   });
+
+  /* uniform-scale each frame's content so the 1280x800 page fits its cell
+     (contain: letterbox if the cell aspect differs; cover-crop is NOT used so
+     nothing is cut). Recompute on resize. */
+  function fit() {
+    document.querySelectorAll(".panel-frame").forEach(function (frame) {
+      var ifr = frame.querySelector("iframe");
+      if (!ifr) return;
+      var w = frame.clientWidth, h = frame.clientHeight;
+      var s = Math.min(w / VW, h / VH);
+      if (!isFinite(s) || s <= 0) return;
+      ifr.style.transform = "scale(" + s + ")";
+      /* center the letterboxed page inside the cell */
+      var ox = (w - VW * s) / 2, oy = (h - VH * s) / 2;
+      ifr.style.left = ox + "px";
+      ifr.style.top = oy + "px";
+    });
+  }
+  window.addEventListener("resize", fit);
+  /* fit after layout settles and again once frames load (fonts shift sizes) */
+  setTimeout(fit, 60);
+  setTimeout(fit, 600);
+  window.addEventListener("load", fit);
+
   var clock = document.getElementById("clock");
   function tick() {
     clock.textContent = new Date().toLocaleTimeString("en-US", { hour12: false });
