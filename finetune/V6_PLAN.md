@@ -11,13 +11,20 @@ Fine-tune Mapika's **decider-2b** (Apache-2.0, Qwen3.5-2B-Base hybrid linear-att
 - **HARD RULE: before ANY Spark alloc job (training/load), verify what's resident with `ps aux --sort=-rss`, NOT tag lists. If EXL3 daily driver is up (78.6 GB), only run training capped ≤14 GB, or wait for an idle window.**
 - **Relaunch order: EXL3 daily driver FIRST (recipe argv below), verify :8000, THEN training.**
 
-## Restore EXL3 daily driver (do this first)
-Recipe: `~/sparkrun-recipes/recipes/qwen38-flash-next-exl3-native.yaml` on Spark.
+## Coexistence budget (MEASURED 9/26, post-restore)
+- EXL3 container (vllm-fn-tp1, GMU 0.80, weights 72.8 GB, KV needs 4.34 GiB for 262k ctx) boots fine with **laya gate :8710 (1.99 GB) co-resident**, but FAILS the KV check when **decider lane :8712 (5.58 GB)** is also resident (KV available drops to 3.53 GiB → "increase GMU or decrease max_model_len").
+- **Standing config: EXL3 + laya gate :8710 + router :8711 = always-on trio. Decider lane :8712 and v6 training (12-16 GB) are NOT co-resident-safe with EXL3 at GMU 0.80 — start them AFTER EXL3 has claimed its budget AND only if pool math still works; otherwise use the EXL3-idle window.**
+- v6 training launch procedure: kill decider lane first (free 5.6 GB), confirm EXL3 /health still OK, launch training capped, restore decider lane only if pool math allows.
+
+## Restore EXL3 daily driver (DONE 9/26 — reference for next time)
+**Verified restored 9/26:** canonical `~/switch-to-qwen-flash.sh`, cold load ~9 min, "SPARK-ALIVE" on-box + "ALIVE" from Mac via larryspark.local:8000. NOTE: the recipe's `pre_load` script `drop-model-cache.sh` does not exist; the switch script is the real launcher (docker vllm-fn-tp1, GMU 0.80, PLE offload). See coexistence budget above.
 ```
-ssh jaita@192.168.2.185 'cd /home/jaita/work/exllamav3-fork && bash ~/sparkrun-recipes/scripts/drop-model-cache.sh && taskset -c 5-9,15-19 ~/venvs/exl3-150/bin/python examples/chat.py -m ~/models/hf/turboderp/Qwen3.8-Flash-Next-exl3 -mode qwen35 -mtp -ndt 5 -dds -dc 0.6 -cq 8,8 -cs 262144 -tps > /tmp/exl3_restore.log 2>&1 &'
-# verify: curl http://127.0.0.1:8000/health (from Spark), Loca → http://larryspark.local:8000/v1
-# expected: resident ~78.6 GB, load ~30s
-# NOTE: verify the exact venv path (exl3-150) + how :8000 is served (chat.py vs server script) from the recipe/STATE.md before launching — do not guess.
+# CORRECT launcher (the code block below is the OLD pre-9/25 chat.py path — kept for reference only):
+ssh jaita@192.168.2.185 'bash ~/switch-to-qwen-flash.sh'
+# wait for /health: docker vllm-fn-tp1, cold ~9-13 min; poll: curl http://127.0.0.1:8000/health
+# verify Loca path from Mac: curl http://larryspark.local:8000/v1/models
+# stale note kept for reference: recipe qwen38-flash-next-exl3-native.yaml describes the vcruz305
+# exllamav3 chat.py variant (exl3-150 venv) — NOT what is currently serving :8000. Do not guess.
 ```
 
 ## Assets (all verified)
