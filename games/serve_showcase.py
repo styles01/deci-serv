@@ -29,6 +29,18 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+# ---- OTA latency instrumentation (additive; see games/LATENCY_INSTRUMENTATION.md)
+from latency_instrumentation import (
+    health as ota_health,
+    install as ota_install,
+    js as ota_js,
+    note_adapter,
+    note_browser,
+    parse_gate_questions,
+)
+
 REPO = Path(__file__).resolve().parent.parent
 SHOWCASE = REPO / "vendor" / "arbiter" / "showcase"
 
@@ -71,11 +83,17 @@ def proxy_decide(body: bytes) -> tuple[bytes, int]:
     req = urllib.request.Request(
         GATE.rstrip("/") + "/decide", data=json.dumps(gate_body).encode(),
         headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=60) as r:
-        out = json.loads(r.read())
-    gate_ms = out.get("latency_ms")
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            out = json.loads(r.read())
+        _ms = out.get("latency_ms")
+    except Exception as exc:
+        note_adapter(parse_gate_questions(payload), t0, None, None, status=502, error=exc)
+        raise
+    gate_ms = _ms
     if gate_ms is None:
         gate_ms = (time.time() - t0) * 1000.0
+    note_adapter(parse_gate_questions(payload), t0, time.time(), gate_ms)
     resp = {
         "model": "deciserv-laya",
         "answers": out.get("answers", {}),
@@ -102,6 +120,35 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?")[0]
         if path in ("/readyz", "/healthz"):
             self._send(json.dumps({"status": "ready", "models": ["deciserv"]}).encode())
+            return
+        # OTA instrumentation endpoints (additive; never touches game routes)
+        if path == "/__ota__/latency_client.mjs":
+            from urllib.parse import parse_qs, urlparse
+            q = parse_qs(urlparse(self.path).query)
+            game = (q.get("game") or ["unknown"])[0]
+            tick = (q.get("tick") or [""])[0]
+            self._send(ota_js("latency_client")
+                       .replace("var game = q.game || 'unknown';",
+                                f"var game = {json.dumps(game)};")
+                       .replace("var tick = parseFloat(q.tick) || null;",
+                                f"var tick = parseFloat({json.dumps(tick)}) || null;").encode(),
+                       200, "text/javascript")
+            return
+        if path == "/__ota__/beacon":
+            n = int(self.headers.get("Content-Length") or 0)
+            try:
+                note_browser(json.loads(self.rfile.read(n) or b"{}"))
+            except Exception:  # noqa: BLE001 — never break serving on beacon junk
+                pass
+            self.send_response(200)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", "13")
+            self.end_headers()
+            self.wfile.write(b'{"ok":true}\n\n')
+            return
+        if path == "/__ota__/health.json":
+            self._send(json.dumps(ota_health()).encode())
             return
         # /showcase (no trailing slash) → /showcase/ ; also 301 / → /showcase/
         if path == "/showcase":
@@ -137,6 +184,20 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):  # noqa: N802
         path = self.path.split("?")[0]
+        # OTA beacon endpoint (browser timing events; additive, never game traffic)
+        if path == "/__ota__/beacon":
+            n = int(self.headers.get("Content-Length") or 0)
+            try:
+                note_browser(json.loads(self.rfile.read(n) or b"{}"))
+            except Exception:  # noqa: BLE001 — never break serving on beacon junk
+                pass
+            self.send_response(200)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", "13")
+            self.end_headers()
+            self.wfile.write(b'{"ok":true}\n\n')
+            return
         if path not in ("/v1/systemone", "/v1/predict"):
             self._send(b"not found", 404, "text/plain")
             return
@@ -162,6 +223,7 @@ def main(argv=None):
                     help="bind address (0.0.0.0 = LAN-reachable, e.g. phone)")
     args = ap.parse_args(argv)
     GATE = args.gate
+    ota_install()
     srv = ThreadingHTTPServer((args.bind, args.port), Handler)
     host = "127.0.0.1" if args.bind in ("127.0.0.1", "localhost") else args.bind
     print(f"showcase over DeciServ: http://{host}:{args.port}/showcase/  (gate {GATE})")

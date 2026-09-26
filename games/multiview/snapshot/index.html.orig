@@ -168,34 +168,6 @@ body {
   }
   tick();
   setInterval(tick, 1000);
-
-/* OTA compositing-lag probe (additive; see games/LATENCY_INSTRUMENTATION.md).
-   Beacons go cross-origin to :8010 as no-cors POST with text/plain (a CORS
-   "simple request": no preflight; :8010's beacon endpoint accepts it). */
-var otaBeacon = function (obj) {
-  try {
-    fetch('http://' + HOST + ':8010/__ota__/beacon', { method: 'POST', mode: 'no-cors',
-      headers: { 'content-type': 'text/plain' }, body: JSON.stringify(obj) }).catch(function () {});
-  } catch (e) {}
-};
-var otaLag = {};
-GAMES.forEach(function (g) { otaLag[g] = null; });
-function otaProbeCell(g) {
-  var t0 = performance.now();
-  fetch(BASE + g + '/index.html', { cache: 'no-store' }).then(function (r) {
-    return r.text().then(function (t) { return { ok: r.ok, n: t.length }; });
-  }).then(function (o) {
-    var ms = performance.now() - t0;
-    otaLag[g] = Math.round(ms);
-    otaBeacon({ type: 'composite', ts: Date.now(),
-      game: g, page: 'multiview', cell_ms: ms, cell_bytes: o.n, cell_ok: !!o.ok });
-  }).catch(function () {
-    otaLag[g] = null;
-    otaBeacon({ type: 'composite', ts: Date.now(),
-      game: g, page: 'multiview', cell_ms: null, cell_ok: false });
-  });
-}
-setInterval(function () { GAMES.forEach(otaProbeCell); }, 1000);
 })();
 </script>
 </body>
