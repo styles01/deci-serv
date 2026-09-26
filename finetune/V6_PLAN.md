@@ -11,10 +11,15 @@ Fine-tune Mapika's **decider-2b** (Apache-2.0, Qwen3.5-2B-Base hybrid linear-att
 - **HARD RULE: before ANY Spark alloc job (training/load), verify what's resident with `ps aux --sort=-rss`, NOT tag lists. If EXL3 daily driver is up (78.6 GB), only run training capped ≤14 GB, or wait for an idle window.**
 - **Relaunch order: EXL3 daily driver FIRST (recipe argv below), verify :8000, THEN training.**
 
-## Coexistence budget (MEASURED 9/26, post-restore)
-- EXL3 container (vllm-fn-tp1, GMU 0.80, weights 72.8 GB, KV needs 4.34 GiB for 262k ctx) boots fine with **laya gate :8710 (1.99 GB) co-resident**, but FAILS the KV check when **decider lane :8712 (5.58 GB)** is also resident (KV available drops to 3.53 GiB → "increase GMU or decrease max_model_len").
-- **Standing config: EXL3 + laya gate :8710 + router :8711 = always-on trio. Decider lane :8712 and v6 training (12-16 GB) are NOT co-resident-safe with EXL3 at GMU 0.80 — start them AFTER EXL3 has claimed its budget AND only if pool math still works; otherwise use the EXL3-idle window.**
-- v6 training launch procedure: kill decider lane first (free 5.6 GB), confirm EXL3 /health still OK, launch training capped, restore decider lane only if pool math allows.
+## Coexistence budget (MEASURED 9/26, post-restore — nvidia-smi + ps verified twice)
+- **Steady-state resident set (GB10 pool 130.7 GB total):**
+  - EXL3 `vllm-fn-tp1` tree: **~102-104 GB** (GPU 80.2 GB in VLLM::Worker + 19.9 GB host RSS in its PLE-offload spawn worker + EngineCore ~1.1 GB) — this is why avail drops to ~4.5 GB when everything runs
+  - laya gate :8710: **~2.0 GB** GPU (+1.3 GB host pages swapped out)
+  - decider lane :8712: **~4.0 GB** GPU (weights 3.8 bf16 + ~0.2 ctx/workspace). NOTE: 1.4 GB was the wrong "incremental weights only" figure; 5.6 GB was the mid-teardown transient during restore. 4.0 GB is the serving steady-state.
+  - misc/system/dashboard: ~4-5 GB
+- EXL3 boots fine with laya co-resident; FAILS KV check (needs 4.34 GiB KV for 262k ctx) when decider lane is up during boot. **Boot order matters: EXL3 first, decider lane after.**
+- **v6 training (12-16 GB) is NOT co-resident-safe with full EXL3 stack at steady state (avail 4.5 GB)** — requires killing decider lane (+4 GB) AND accepting swap pressure, or the EXL3-idle window. Default: idle window.
+- **Image/TTS models:** nothing beyond ~4 GB co-resident fits next to the full stack; heavier workloads (Z-Image, Wan 14B, ComfyUI AEON at 22-40 GB) require the EXL3-idle window (switch scripts exist; "one model at a time" rule).
 
 ## Restore EXL3 daily driver (DONE 9/26 — reference for next time)
 **Verified restored 9/26:** canonical `~/switch-to-qwen-flash.sh`, cold load ~9 min, "SPARK-ALIVE" on-box + "ALIVE" from Mac via larryspark.local:8000. NOTE: the recipe's `pre_load` script `drop-model-cache.sh` does not exist; the switch script is the real launcher (docker vllm-fn-tp1, GMU 0.80, PLE offload). See coexistence budget above.
