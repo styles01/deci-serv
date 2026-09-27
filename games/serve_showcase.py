@@ -74,6 +74,14 @@ def rebrand(body: bytes) -> bytes:
 
 
 def proxy_decide(body: bytes) -> tuple[bytes, int]:
+    import os
+    if os.environ.get("OTA_CAPTURE"):
+        try:
+            with open("/tmp/ota_failing_bodies.jsonl", "a") as fh:
+                fh.write(body.decode()[:6000].replace(chr(10), " ") + chr(10))
+        except Exception:
+            pass
+    _orig = body
     """POST /v1/systemone -> DeciServ /decide. Shapes his response envelope."""
     payload = json.loads(body or b"{}")
     # strip Jev-only fields our gate doesn't accept
