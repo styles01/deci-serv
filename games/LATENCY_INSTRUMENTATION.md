@@ -232,6 +232,16 @@ For each phase × game: `gate_inference_ms` p50/p95/p99, `rt_ms` p50/p95/p99,
 > If Phase B ≈ Phase A within noise (<10% p95 shift), the gate is effectively
 > free-riding on idle memory cycles and co-residency is safe for gameplay.
 
+## 4b. Optional Phase C — question-batch sensitivity (TypeSafe/Jev lesson, layered 2026-09-26)
+
+TypeSafe's parallel-questions cookbook (docs.typesafe.ai/cookbooks/parallel_questions) measures
+12.2x cheaper / 10.0x faster when N independent questions share one hosted call. That arithmetic
+is hosted-API-specific (document tokens billed N times + N round trips); our gate decodes
+locally, so N questions still cost N read passes — but per-call HTTP + queue overhead removal
+should still show as a modest p50/p95 gain. Cheap probe: same state, 1 vs 4 vs 8 questions per
+/decide call, 200 iterations each, compare latency_ms p50/p95. Do this BEFORE the Phase A/B
+window so the production batch size is fixed in the protocol.
+
 ## 5. Experiment commands (copy-paste, operator-run)
 
 ```bash

@@ -42,6 +42,7 @@ GATE_QUESTION = {
         "name: pass, safe to run",
         "name: escalate, ambiguous - ask human",
         "name: block, unsafe or destructive",
+        "name: unverified, gate could not judge - no match",
     ],
 }
 
@@ -99,7 +100,10 @@ def main() -> None:
         ans = (out.get("answers") or {}).get("gate") or {}
         chosen = ans.get("choice") or ""
         probs = ans.get("probabilities") or {}
-        verdict = chosen.split(",")[0].strip() or "unknown"
+        _pick = chosen.split(",")[0].strip().lower()
+        if _pick.startswith("name:"):
+            _pick = _pick[len("name:"):].strip()
+        verdict = _pick or "unverified"
         gate_ms = out.get("latency_ms")
     except Exception as exc:  # noqa: BLE001 — fail-open: record and exit clean
         verdict = "gate_unreachable"

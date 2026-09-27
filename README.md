@@ -104,7 +104,7 @@ An agent LLM is slow, expensive, and hallucination-prone precisely when it is as
 
 The big model answers questions; the gate decides *whether and how* they get asked. Two orders of magnitude cheaper than asking the LLM to judge itself.
 
-**Wiring it into an agent stack** — consult `/decide` from your `pre_tool_call` hook (Hermes), `PreToolUse` hook (Claude Code-style shells), or a validator process (NeMo Guardrails / Guardrails AI). Enforce thresholds fitted on **your** traffic (see calibration notes in the field guide below); a hosted Jev endpoint can sit behind the same contract as a fallback.
+**Wiring it into an agent stack** — consult `/decide` from your `pre_tool_call` hook (Hermes), `PreToolUse` hook (Claude Code-style shells), or a validator process (NeMo Guardrails / Guardrails AI). Enforce thresholds fitted on **your** traffic (see calibration notes in the field guide below); a hosted Jev endpoint can sit behind the same contract as a fallback. Batch independent questions over the same state in **one** request (removes per-call round-trip overhead; TypeSafe's cookbook measures 12.2x cheaper for hosted N-question calls — vendor-measured on a document-heavy workload, not a universal constant). Always give the gate a **no-match / unverified** branch: when the gate is silent, unreachable, or empty, never silently pass — escalate to the big model, park-and-retry, or tag unverified and continue. Thresholds fitted on your own labeled traffic (see calibration notes in the field guide below); a hosted Jev endpoint can sit behind the same contract as a fallback.
 
 ## Measured numbers
 

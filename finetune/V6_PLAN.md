@@ -62,6 +62,24 @@ nohup /home/jaita/venvs/laya/bin/python -m decider.train \
 3. **Gates:** (a) val_v5 per-type acc/ECE vs v11 baseline, (b) everyday classes (policy/routing/arcadia benign) hold within 1-2 pts, (c) ECE ≤ 0.08 on hard subsets
 4. **Battery v2:** point a decider lane at v6 (`deciserv/server_decider.py --port 8713` style) → `python -m eval.harness --cases eval/cases_v2_only --server http://127.0.0.1:8713 --record eval/recordings --label decider2b-v6 --concurrency 2` → compare vs v11 zero-shot (benign 93%, AUC des 0.9840 / exfil 0.9723) and laya-v4 (AUC 0.9934 / 0.9575)
 5. **Six-up re-record** on seed 13 with v6 (`SIXUP_PORT=8011` decider lane)
+6. **OTA A/B (from the subagent's protocol):** games/ota_analyze.py idle vs EXL3-decode window — gate must hold obs→action p95 ≤ tick×0.5 with EXL3 decoding. If p95 degrades >25% under decode, v6 promotion must re-check latency gates (memory bus is the shared resource).
+## TypeSafe/Jev cross-check (layered 2026-09-26 — tweet fact-checked REAL)
+Independent validation of this plan's design from TypeSafe's official Claude-Code skill for Jev
+(github.com/typesafe-ai/skills, MIT — verified verbatim) + their docs.typesafe.ai cookbooks:
+1. **Batch independent questions over one state in a single request** — we already do (one /decide
+   call, fan-out questions). Their 12.2x cost claim is API-arithmetic (document tokens billed N
+   times) — NOT applicable to local decode, but per-call HTTP overhead removal still helps our
+   p50. Cheap A/B: gate p50 with 1 vs 4 questions over same state (expect modest gain from
+   removed round-trips; ours is local decode, not hosted).
+2. **Every gate needs a no-match / unverified branch** — implemented 9/26 in
+   hooks/decider_shadow_hook.py: 4th option "unverified" + gate_unreachable + empty-choice all
+   log as non-pass verdicts. Never silently pass when the gate is silent — escalate or park.
+3. **Thresholds fitted on own labeled traffic, never vendor defaults** — already the plan
+   (harvest -> fit -> enforce). TypeSafe's SKILL.md states this verbatim; treat their published
+   thresholds as examples to evaluate, not universal constants.
+4. **Keep policy in code; the model supplies judgment only** — mirrors our design: code owns
+   the workflow (hook script), decider-2b only answers typed questions over state.
+
 6. **Promote** :8712 → v6 weights only after gates pass; keep v11 tagged for rollback
 
 ## Current live state (as of this writing)
